@@ -53,10 +53,14 @@ import org.apache.kafka.common.errors.UnknownServerException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicResult;
+import org.apache.kafka.common.message.DeleteTopicsResponseData;
+import org.apache.kafka.common.message.DeleteTopicsResponseData.DeletableTopicResult;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
 import org.apache.kafka.common.message.ElectPreferredLeadersResponseData;
 import org.apache.kafka.common.message.ElectPreferredLeadersResponseData.PartitionResult;
 import org.apache.kafka.common.message.ElectPreferredLeadersResponseData.ReplicaElectionResult;
+import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData;
+import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData.AlterConfigsResourceResult;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.ApiError;
 import org.apache.kafka.common.requests.CreateAclsResponse;
@@ -76,6 +80,7 @@ import org.apache.kafka.common.requests.DescribeConfigsResponse;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
 import org.apache.kafka.common.requests.ElectPreferredLeadersResponse;
 import org.apache.kafka.common.requests.FindCoordinatorResponse;
+import org.apache.kafka.common.requests.IncrementalAlterConfigsResponse;
 import org.apache.kafka.common.requests.ListGroupsResponse;
 import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.MetadataResponse;
@@ -221,6 +226,18 @@ public class KafkaAdminClientTest {
         data.topics().add(new CreatableTopicResult().
             setName(topicName).setErrorCode(error.code()));
         return new CreateTopicsResponse(data);
+    }
+
+    private static DeleteTopicsResponse prepareDeleteTopicsResponse(String topicName, Errors error) {
+        DeleteTopicsResponseData data = new DeleteTopicsResponseData();
+        data.responses().add(new DeletableTopicResult()
+                .setName(topicName)
+                .setErrorCode(error.code()));
+        return new DeleteTopicsResponse(data);
+    }
+
+    private static FindCoordinatorResponse prepareFindCoordinatorResponse(Errors error, Node node) {
+        return FindCoordinatorResponse.prepareResponse(error, node);
     }
 
     /**
@@ -394,19 +411,19 @@ public class KafkaAdminClientTest {
             env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
 
             env.kafkaClient().prepareResponse(body -> body instanceof DeleteTopicsRequest,
-                    new DeleteTopicsResponse(Collections.singletonMap("myTopic", Errors.NONE)));
+                    prepareDeleteTopicsResponse("myTopic", Errors.NONE));
             KafkaFuture<Void> future = env.adminClient().deleteTopics(Collections.singletonList("myTopic"),
                     new DeleteTopicsOptions()).all();
             future.get();
 
             env.kafkaClient().prepareResponse(body -> body instanceof DeleteTopicsRequest,
-                    new DeleteTopicsResponse(Collections.singletonMap("myTopic", Errors.TOPIC_DELETION_DISABLED)));
+                    prepareDeleteTopicsResponse("myTopic", Errors.TOPIC_DELETION_DISABLED));
             future = env.adminClient().deleteTopics(Collections.singletonList("myTopic"),
                     new DeleteTopicsOptions()).all();
             TestUtils.assertFutureError(future, TopicDeletionDisabledException.class);
 
             env.kafkaClient().prepareResponse(body -> body instanceof DeleteTopicsRequest,
-                    new DeleteTopicsResponse(Collections.singletonMap("myTopic", Errors.UNKNOWN_TOPIC_OR_PARTITION)));
+                    prepareDeleteTopicsResponse("myTopic", Errors.UNKNOWN_TOPIC_OR_PARTITION));
             future = env.adminClient().deleteTopics(Collections.singletonList("myTopic"),
                     new DeleteTopicsOptions()).all();
             TestUtils.assertFutureError(future, UnknownTopicOrPartitionException.class);
@@ -925,7 +942,7 @@ public class KafkaAdminClientTest {
                 Collections.emptySet(),
                 Collections.emptySet(), nodes.get(0));
 
-        try (AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(cluster)) {
+        try (AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(cluster, AdminClientConfig.RETRIES_CONFIG, "2")) {
             env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
 
             // Empty metadata response should be retried
@@ -955,8 +972,8 @@ public class KafkaAdminClientTest {
             // handle retriable errors
             env.kafkaClient().prepareResponseFrom(
                     new ListGroupsResponse(
-                            Errors.COORDINATOR_NOT_AVAILABLE,
-                            Collections.emptyList()
+                        Errors.COORDINATOR_NOT_AVAILABLE,
+                        Collections.emptyList()
                     ),
                     node1);
             env.kafkaClient().prepareResponseFrom(
@@ -1059,9 +1076,37 @@ public class KafkaAdminClientTest {
         try (AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(cluster)) {
             env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
 
-            env.kafkaClient().prepareResponse(new FindCoordinatorResponse(Errors.NONE, env.cluster().controller()));
+            //Retriable FindCoordinatorResponse errors should be retried
+            env.kafkaClient().prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.COORDINATOR_NOT_AVAILABLE,  Node.noNode()));
+            env.kafkaClient().prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.COORDINATOR_LOAD_IN_PROGRESS,  Node.noNode()));
+
+            env.kafkaClient().prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, env.cluster().controller()));
 
             DescribeGroupsResponseData data = new DescribeGroupsResponseData();
+
+            //Retriable  errors should be retried
+            data.groups().add(DescribeGroupsResponse.groupMetadata(
+                "group-0",
+                Errors.COORDINATOR_LOAD_IN_PROGRESS,
+                "",
+                "",
+                "",
+                Collections.emptyList(),
+                Collections.emptySet()));
+            env.kafkaClient().prepareResponse(new DescribeGroupsResponse(data));
+
+            data = new DescribeGroupsResponseData();
+            data.groups().add(DescribeGroupsResponse.groupMetadata(
+                "group-0",
+                Errors.COORDINATOR_NOT_AVAILABLE,
+                "",
+                "",
+                "",
+                Collections.emptyList(),
+                Collections.emptySet()));
+            env.kafkaClient().prepareResponse(new DescribeGroupsResponse(data));
+
+            data = new DescribeGroupsResponseData();
             TopicPartition myTopicPartition0 = new TopicPartition("my_topic", 0);
             TopicPartition myTopicPartition1 = new TopicPartition("my_topic", 1);
             TopicPartition myTopicPartition2 = new TopicPartition("my_topic", 2);
@@ -1126,7 +1171,14 @@ public class KafkaAdminClientTest {
         try (AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(cluster)) {
             env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
 
-            env.kafkaClient().prepareResponse(new FindCoordinatorResponse(Errors.NONE, env.cluster().controller()));
+            //Retriable FindCoordinatorResponse errors should be retried
+            env.kafkaClient().prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.COORDINATOR_NOT_AVAILABLE,  Node.noNode()));
+
+            env.kafkaClient().prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, env.cluster().controller()));
+
+            //Retriable  errors should be retried
+            env.kafkaClient().prepareResponse(new OffsetFetchResponse(Errors.COORDINATOR_NOT_AVAILABLE, Collections.emptyMap()));
+            env.kafkaClient().prepareResponse(new OffsetFetchResponse(Errors.COORDINATOR_LOAD_IN_PROGRESS, Collections.emptyMap()));
 
             TopicPartition myTopicPartition0 = new TopicPartition("my_topic", 0);
             TopicPartition myTopicPartition1 = new TopicPartition("my_topic", 1);
@@ -1170,14 +1222,14 @@ public class KafkaAdminClientTest {
             env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
 
             //Retriable FindCoordinatorResponse errors should be retried
-            env.kafkaClient().prepareResponse(new FindCoordinatorResponse(Errors.COORDINATOR_NOT_AVAILABLE,  Node.noNode()));
-            env.kafkaClient().prepareResponse(new FindCoordinatorResponse(Errors.COORDINATOR_LOAD_IN_PROGRESS, Node.noNode()));
+            env.kafkaClient().prepareResponse(prepareFindCoordinatorResponse(Errors.COORDINATOR_NOT_AVAILABLE,  Node.noNode()));
+            env.kafkaClient().prepareResponse(prepareFindCoordinatorResponse(Errors.COORDINATOR_LOAD_IN_PROGRESS, Node.noNode()));
 
-            env.kafkaClient().prepareResponse(new FindCoordinatorResponse(Errors.NONE, env.cluster().controller()));
+            env.kafkaClient().prepareResponse(prepareFindCoordinatorResponse(Errors.NONE, env.cluster().controller()));
 
-            final Map<String, Errors> response = new HashMap<>();
-            response.put("group-0", Errors.NONE);
-            env.kafkaClient().prepareResponse(new DeleteGroupsResponse(response));
+            final Map<String, Errors> validResponse = new HashMap<>();
+            validResponse.put("group-0", Errors.NONE);
+            env.kafkaClient().prepareResponse(new DeleteGroupsResponse(validResponse));
 
             final DeleteConsumerGroupsResult result = env.adminClient().deleteConsumerGroups(groupIds);
 
@@ -1185,11 +1237,81 @@ public class KafkaAdminClientTest {
             assertNull(results.get());
 
             //should throw error for non-retriable errors
-            env.kafkaClient().prepareResponse(new FindCoordinatorResponse(Errors.GROUP_AUTHORIZATION_FAILED,  Node.noNode()));
+            env.kafkaClient().prepareResponse(prepareFindCoordinatorResponse(Errors.GROUP_AUTHORIZATION_FAILED,  Node.noNode()));
 
             final DeleteConsumerGroupsResult errorResult = env.adminClient().deleteConsumerGroups(groupIds);
             TestUtils.assertFutureError(errorResult.deletedGroups().get("group-0"), GroupAuthorizationException.class);
 
+            //Retriable  errors should be retried
+            env.kafkaClient().prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, env.cluster().controller()));
+
+            final Map<String, Errors> errorResponse1 = new HashMap<>();
+            errorResponse1.put("group-0", Errors.COORDINATOR_NOT_AVAILABLE);
+            env.kafkaClient().prepareResponse(new DeleteGroupsResponse(errorResponse1));
+
+            final Map<String, Errors> errorResponse2 = new HashMap<>();
+            errorResponse2.put("group-0", Errors.COORDINATOR_LOAD_IN_PROGRESS);
+            env.kafkaClient().prepareResponse(new DeleteGroupsResponse(errorResponse2));
+
+            env.kafkaClient().prepareResponse(new DeleteGroupsResponse(validResponse));
+
+            final DeleteConsumerGroupsResult errorResult1 = env.adminClient().deleteConsumerGroups(groupIds);
+
+            final KafkaFuture<Void> errorResults = errorResult1.deletedGroups().get("group-0");
+            assertNull(errorResults.get());
+        }
+    }
+
+    @Test
+    public void testIncrementalAlterConfigs()  throws Exception {
+        try (AdminClientUnitTestEnv env = mockClientEnv()) {
+            env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
+
+            //test error scenarios
+            IncrementalAlterConfigsResponseData responseData =  new IncrementalAlterConfigsResponseData();
+            responseData.responses().add(new AlterConfigsResourceResult()
+                    .setResourceName("")
+                    .setResourceType(ConfigResource.Type.BROKER.id())
+                    .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                    .setErrorMessage("authorization error"));
+
+            responseData.responses().add(new AlterConfigsResourceResult()
+                    .setResourceName("topic1")
+                    .setResourceType(ConfigResource.Type.TOPIC.id())
+                    .setErrorCode(Errors.INVALID_REQUEST.code())
+                    .setErrorMessage("Config value append is not allowed for config"));
+
+            env.kafkaClient().prepareResponse(new IncrementalAlterConfigsResponse(responseData));
+
+            ConfigResource brokerResource = new ConfigResource(ConfigResource.Type.BROKER, "");
+            ConfigResource topicResource = new ConfigResource(ConfigResource.Type.TOPIC, "topic1");
+
+            AlterConfigOp alterConfigOp1 = new AlterConfigOp(
+                    new ConfigEntry("log.segment.bytes", "1073741"),
+                    AlterConfigOp.OpType.SET);
+
+            AlterConfigOp alterConfigOp2 = new AlterConfigOp(
+                    new ConfigEntry("compression.type", "gzip"),
+                    AlterConfigOp.OpType.APPEND);
+
+            final Map<ConfigResource, Collection<AlterConfigOp>> configs = new HashMap<>();
+            configs.put(brokerResource, Collections.singletonList(alterConfigOp1));
+            configs.put(topicResource, Collections.singletonList(alterConfigOp2));
+
+            AlterConfigsResult result = env.adminClient().incrementalAlterConfigs(configs);
+            TestUtils.assertFutureError(result.values().get(brokerResource), ClusterAuthorizationException.class);
+            TestUtils.assertFutureError(result.values().get(topicResource), InvalidRequestException.class);
+
+            // Test a call where there are no errors.
+            responseData =  new IncrementalAlterConfigsResponseData();
+            responseData.responses().add(new AlterConfigsResourceResult()
+                    .setResourceName("")
+                    .setResourceType(ConfigResource.Type.BROKER.id())
+                    .setErrorCode(Errors.NONE.code())
+                    .setErrorMessage(ApiError.NONE.message()));
+
+            env.kafkaClient().prepareResponse(new IncrementalAlterConfigsResponse(responseData));
+            env.adminClient().incrementalAlterConfigs(Collections.singletonMap(brokerResource, asList(alterConfigOp1))).all().get();
         }
     }
 

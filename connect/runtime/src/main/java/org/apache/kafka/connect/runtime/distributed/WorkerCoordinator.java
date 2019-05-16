@@ -40,6 +40,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * This class manages the coordination process with the Kafka group coordinator on the broker for managing assignments
@@ -78,14 +79,14 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
         super(logContext,
               client,
               groupId,
+              Optional.empty(),
               rebalanceTimeoutMs,
               sessionTimeoutMs,
               heartbeatIntervalMs,
               metrics,
               metricGrpPrefix,
               time,
-              retryBackoffMs,
-              true);
+              retryBackoffMs);
         this.log = logContext.logger(WorkerCoordinator.class);
         this.restUrl = restUrl;
         this.configStorage = configStorage;
@@ -145,11 +146,11 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
     }
 
     @Override
-    public JoinGroupRequestData.JoinGroupRequestProtocolSet metadata() {
+    public JoinGroupRequestData.JoinGroupRequestProtocolCollection metadata() {
         configSnapshot = configStorage.snapshot();
         ConnectProtocol.WorkerState workerState = new ConnectProtocol.WorkerState(restUrl, configSnapshot.offset());
         ByteBuffer metadata = ConnectProtocol.serializeMetadata(workerState);
-        return new JoinGroupRequestData.JoinGroupRequestProtocolSet(
+        return new JoinGroupRequestData.JoinGroupRequestProtocolCollection(
                 Collections.singleton(new JoinGroupRequestData.JoinGroupRequestProtocol()
                         .setName(DEFAULT_SUBPROTOCOL)
                         .setMetadata(metadata.array()))

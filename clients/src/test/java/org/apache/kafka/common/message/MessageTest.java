@@ -18,7 +18,6 @@
 package org.apache.kafka.common.message;
 
 import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopicSet;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Message;
@@ -36,9 +35,8 @@ import java.util.List;
 import org.apache.kafka.common.protocol.types.Type;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopic;
-import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopicSet;
+import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopicCollection;
 import org.junit.Assert;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.Timeout;
@@ -47,7 +45,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-@Ignore
 public final class MessageTest {
     @Rule
     final public Timeout globalTimeout = Timeout.millis(120000);
@@ -73,12 +70,12 @@ public final class MessageTest {
             setTransactionalId("blah").
             setProducerId(0xbadcafebadcafeL).
             setProducerEpoch((short) 30000).
-            setTopics(new AddPartitionsToTxnTopicSet(Collections.singletonList(
+            setTopics(new AddPartitionsToTxnTopicCollection(Collections.singletonList(
                 new AddPartitionsToTxnTopic().
                     setName("Topic").
                     setPartitions(Collections.singletonList(1))).iterator())));
         testMessageRoundTrips(new CreateTopicsRequestData().
-            setTimeoutMs(1000).setTopics(new CreatableTopicSet()));
+            setTimeoutMs(1000).setTopics(new CreateTopicsRequestData.CreatableTopicCollection()));
         testMessageRoundTrips(new DescribeAclsRequestData().
             setResourceType((byte) 42).
             setResourceNameFilter(null).
@@ -87,6 +84,11 @@ public final class MessageTest {
             setHostFilter(null).
             setOperation((byte) 0).
             setPermissionType((byte) 0), (short) 0);
+        testMessageRoundTrips(new MetadataRequestData().
+            setTopics(null).
+            setAllowAutoTopicCreation(false).
+            setIncludeClusterAuthorizedOperations(false).
+            setIncludeTopicAuthorizedOperations(false));
     }
 
     private void testMessageRoundTrips(Message message) throws Exception {
@@ -131,7 +133,7 @@ public final class MessageTest {
         for (ApiKeys apiKey : ApiKeys.values()) {
             Message message = null;
             try {
-                message = ApiMessageFactory.newRequest(apiKey.id);
+                message = ApiMessageType.fromApiKey(apiKey.id).newRequest();
             } catch (UnsupportedVersionException e) {
                 fail("No request message spec found for API " + apiKey);
             }
@@ -139,7 +141,7 @@ public final class MessageTest {
                     "supports versions up to " + message.highestSupportedVersion(),
                 apiKey.latestVersion() <= message.highestSupportedVersion());
             try {
-                message = ApiMessageFactory.newResponse(apiKey.id);
+                message = ApiMessageType.fromApiKey(apiKey.id).newResponse();
             } catch (UnsupportedVersionException e) {
                 fail("No response message spec found for API " + apiKey);
             }
@@ -156,7 +158,7 @@ public final class MessageTest {
     public void testRequestSchemas() throws Exception {
         for (ApiKeys apiKey : ApiKeys.values()) {
             Schema[] manualSchemas = apiKey.requestSchemas;
-            Schema[] generatedSchemas = ApiMessageFactory.requestSchemas(apiKey.id);
+            Schema[] generatedSchemas = ApiMessageType.fromApiKey(apiKey.id).requestSchemas();
             Assert.assertEquals("Mismatching request SCHEMAS lengths " +
                 "for api key " + apiKey, manualSchemas.length, generatedSchemas.length);
             for (int v = 0; v < manualSchemas.length; v++) {
@@ -179,7 +181,7 @@ public final class MessageTest {
     public void testResponseSchemas() throws Exception {
         for (ApiKeys apiKey : ApiKeys.values()) {
             Schema[] manualSchemas = apiKey.responseSchemas;
-            Schema[] generatedSchemas = ApiMessageFactory.responseSchemas(apiKey.id);
+            Schema[] generatedSchemas = ApiMessageType.fromApiKey(apiKey.id).responseSchemas();
             Assert.assertEquals("Mismatching response SCHEMAS lengths " +
                 "for api key " + apiKey, manualSchemas.length, generatedSchemas.length);
             for (int v = 0; v < manualSchemas.length; v++) {

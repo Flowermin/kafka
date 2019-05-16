@@ -241,6 +241,12 @@ class ReplicaManager(val config: KafkaConfig,
       def value = leaderPartitionsIterator.count(_.isUnderMinIsr)
     }
   )
+  val atMinIsrPartitionCount = newGauge(
+    "AtMinIsrPartitionCount",
+    new Gauge[Int] {
+      def value = leaderPartitionsIterator.count(_.isAtMinIsr)
+    }
+  )
 
   val isrExpandRate = newMeter("IsrExpandsPerSec", "expands", TimeUnit.SECONDS)
   val isrShrinkRate = newMeter("IsrShrinksPerSec", "shrinks", TimeUnit.SECONDS)
@@ -382,7 +388,7 @@ class ReplicaManager(val config: KafkaConfig,
           s"${stopReplicaRequest.controllerEpoch}. Latest known controller epoch is $controllerEpoch")
         (responseMap, Errors.STALE_CONTROLLER_EPOCH)
       } else {
-        val partitions = stopReplicaRequest.partitions.asScala
+        val partitions = stopReplicaRequest.partitions.asScala.toSet
         controllerEpoch = stopReplicaRequest.controllerEpoch
         // First stop fetchers for all partitions, then stop the corresponding replicas
         replicaFetcherManager.removeFetcherForPartitions(partitions)
@@ -1482,6 +1488,7 @@ class ReplicaManager(val config: KafkaConfig,
     removeMetric("OfflineReplicaCount")
     removeMetric("UnderReplicatedPartitions")
     removeMetric("UnderMinIsrPartitionCount")
+    removeMetric("AtMinIsrPartitionCount")
   }
 
   // High watermark do not need to be checkpointed only when under unit tests

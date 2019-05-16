@@ -71,6 +71,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 import static org.apache.kafka.connect.runtime.errors.RetryWithToleranceOperatorTest.NOOP_OPERATOR;
 import static org.easymock.EasyMock.anyObject;
@@ -118,6 +119,7 @@ public class WorkerTest extends ThreadedTest {
     @Mock private Converter taskKeyConverter;
     @Mock private Converter taskValueConverter;
     @Mock private HeaderConverter taskHeaderConverter;
+    @Mock private ExecutorService executorService;
 
     @Before
     public void setup() {
@@ -543,8 +545,7 @@ public class WorkerTest extends ThreadedTest {
         expectTaskValueConverters(ClassLoaderUsage.CURRENT_CLASSLOADER, taskValueConverter);
         expectTaskHeaderConverter(ClassLoaderUsage.CURRENT_CLASSLOADER, taskHeaderConverter);
 
-        workerTask.run();
-        EasyMock.expectLastCall();
+        EasyMock.expect(executorService.submit(workerTask)).andReturn(null);
 
         EasyMock.expect(plugins.delegatingLoader()).andReturn(delegatingLoader);
         EasyMock.expect(delegatingLoader.connectorLoader(WorkerTestConnector.class.getName()))
@@ -568,7 +569,7 @@ public class WorkerTest extends ThreadedTest {
 
         PowerMock.replayAll();
 
-        worker = new Worker(WORKER_ID, new MockTime(), plugins, config, offsetBackingStore);
+        worker = new Worker(WORKER_ID, new MockTime(), plugins, config, offsetBackingStore, executorService);
         worker.start();
         assertStatistics(worker, 0, 0);
         assertStartupStatistics(worker, 0, 0, 0, 0);
@@ -685,8 +686,7 @@ public class WorkerTest extends ThreadedTest {
         expectTaskHeaderConverter(ClassLoaderUsage.CURRENT_CLASSLOADER, null);
         expectTaskHeaderConverter(ClassLoaderUsage.PLUGINS, taskHeaderConverter);
 
-        workerTask.run();
-        EasyMock.expectLastCall();
+        EasyMock.expect(executorService.submit(workerTask)).andReturn(null);
 
         EasyMock.expect(plugins.delegatingLoader()).andReturn(delegatingLoader);
         EasyMock.expect(delegatingLoader.connectorLoader(WorkerTestConnector.class.getName()))
@@ -712,7 +712,7 @@ public class WorkerTest extends ThreadedTest {
 
         PowerMock.replayAll();
 
-        worker = new Worker(WORKER_ID, new MockTime(), plugins, config, offsetBackingStore);
+        worker = new Worker(WORKER_ID, new MockTime(), plugins, config, offsetBackingStore, executorService);
         worker.start();
         assertStatistics(worker, 0, 0);
         worker.startTask(TASK_ID, ClusterConfigState.EMPTY, anyConnectorConfigMap(), origProps, taskStatusListener, TargetState.STARTED);
@@ -778,8 +778,7 @@ public class WorkerTest extends ThreadedTest {
         expectTaskHeaderConverter(ClassLoaderUsage.CURRENT_CLASSLOADER, null);
         expectTaskHeaderConverter(ClassLoaderUsage.PLUGINS, taskHeaderConverter);
 
-        workerTask.run();
-        EasyMock.expectLastCall();
+        EasyMock.expect(executorService.submit(workerTask)).andReturn(null);
 
         EasyMock.expect(plugins.delegatingLoader()).andReturn(delegatingLoader);
         EasyMock.expect(delegatingLoader.connectorLoader(WorkerTestConnector.class.getName()))
@@ -803,7 +802,7 @@ public class WorkerTest extends ThreadedTest {
 
         PowerMock.replayAll();
 
-        worker = new Worker(WORKER_ID, new MockTime(), plugins, config, offsetBackingStore);
+        worker = new Worker(WORKER_ID, new MockTime(), plugins, config, offsetBackingStore, executorService);
         worker.start();
         assertStatistics(worker, 0, 0);
         assertEquals(Collections.emptySet(), worker.taskIds());
@@ -829,7 +828,9 @@ public class WorkerTest extends ThreadedTest {
 
     @Test
     public void testProducerConfigsWithoutOverrides() {
-        assertEquals(defaultProducerConfigs, Worker.producerConfigs(config));
+        Map<String, String> expectedConfigs = new HashMap<>(defaultProducerConfigs);
+        expectedConfigs.put("client.id", "connector-producer-job-0");
+        assertEquals(expectedConfigs, Worker.producerConfigs("connector-producer-" + TASK_ID, config));
     }
 
     @Test
@@ -837,18 +838,21 @@ public class WorkerTest extends ThreadedTest {
         Map<String, String> props = new HashMap<>(workerProps);
         props.put("producer.acks", "-1");
         props.put("producer.linger.ms", "1000");
+        props.put("producer.client.id", "producer-test-id");
         WorkerConfig configWithOverrides = new StandaloneConfig(props);
 
         Map<String, String> expectedConfigs = new HashMap<>(defaultProducerConfigs);
         expectedConfigs.put("acks", "-1");
         expectedConfigs.put("linger.ms", "1000");
-        assertEquals(expectedConfigs, Worker.producerConfigs(configWithOverrides));
+        expectedConfigs.put("client.id", "producer-test-id");
+        assertEquals(expectedConfigs, Worker.producerConfigs("connector-producer-" + TASK_ID, configWithOverrides));
     }
 
     @Test
     public void testConsumerConfigsWithoutOverrides() {
         Map<String, String> expectedConfigs = new HashMap<>(defaultConsumerConfigs);
         expectedConfigs.put("group.id", "connect-test");
+        expectedConfigs.put("client.id", "connector-consumer-test-1");
         assertEquals(expectedConfigs, Worker.consumerConfigs(new ConnectorTaskId("test", 1), config));
     }
 
@@ -857,12 +861,14 @@ public class WorkerTest extends ThreadedTest {
         Map<String, String> props = new HashMap<>(workerProps);
         props.put("consumer.auto.offset.reset", "latest");
         props.put("consumer.max.poll.records", "1000");
+        props.put("consumer.client.id", "consumer-test-id");
         WorkerConfig configWithOverrides = new StandaloneConfig(props);
 
         Map<String, String> expectedConfigs = new HashMap<>(defaultConsumerConfigs);
         expectedConfigs.put("group.id", "connect-test");
         expectedConfigs.put("auto.offset.reset", "latest");
         expectedConfigs.put("max.poll.records", "1000");
+        expectedConfigs.put("client.id", "consumer-test-id");
         assertEquals(expectedConfigs, Worker.consumerConfigs(new ConnectorTaskId("test", 1), configWithOverrides));
     }
 
